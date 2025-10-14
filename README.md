@@ -4,11 +4,13 @@ Trợ lý Du lịch AI thông minh cho Khu du lịch quốc gia Núi Bà Đen, T
 
 ## ✨ Tính năng
 
-- 🤖 **AI thông minh**: Sử dụng Gemini 2.0 Flash cho phản hồi tự nhiên
+- 🤖 **AI thông minh**: Sử dụng Gemini 2.5 Flash cho phản hồi tự nhiên
 - 🗄️ **Dữ liệu thời gian thực**: Kết nối Supabase cho thông tin cập nhật
 - 🔍 **Tìm kiếm thông minh**: RAG (Retrieval-Augmented Generation) 
 - 💬 **Phản hồi tự nhiên**: Như nhân viên tư vấn du lịch thực tế
+- 📝 **Lịch sử trò chuyện**: Lưu 5 tin nhắn gần nhất để hiểu ngữ cảnh
 - ⚡ **Hiệu suất cao**: Cache thông minh, phản hồi nhanh
+- 🎫 **Cập nhật giá vé**: Tự động đồng bộ từ Sunworld API
 
 ## 🚀 Cài đặt
 
@@ -65,6 +67,15 @@ python test_complete.py
 python demo_bot.py
 # Chọn 1 cho interactive mode
 # Chọn 2 cho preset questions
+```
+
+### 🆕 Demo lịch sử trò chuyện
+```bash
+python demo_conversation.py
+# Demo ngắn gọn về tính năng lịch sử
+
+python test_conversation_history.py
+# Test chi tiết với 5 câu hỏi liên tiếp
 ```
 
 ### Test chất lượng AI

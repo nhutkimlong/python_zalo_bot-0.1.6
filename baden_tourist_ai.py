@@ -148,6 +148,15 @@ def check_operating_status(operating_hours: str, current_time: datetime) -> Dict
     
     return {"is_open": None, "status": "không rõ"}
 
+@dataclass
+class ConversationMessage:
+    """Represents a single message in conversation history."""
+    user_id: str
+    user_name: str
+    message: str
+    response: str
+    timestamp: datetime
+    
 class BaDenAIBot:
     def __init__(self):
         # Supabase
@@ -193,6 +202,10 @@ class BaDenAIBot:
         self.session = None
         self._processed_ids = set()
         self.last_price_update = None
+        
+        # Conversation history - lưu trữ 5 tin nhắn gần nhất cho mỗi user
+        self.conversation_history: Dict[str, List[ConversationMessage]] = {}
+        self.max_history_per_user = 5
 
     async def fetch_kb(self) -> List[KBItem]:
         """Fetch knowledge base from Supabase."""
@@ -429,12 +442,57 @@ class BaDenAIBot:
         scored.sort(key=lambda x: x[0], reverse=True)
         return [item for _, item in scored[:k]]
 
-    def build_prompt(self, user_name: str, user_msg: str, contexts: List[KBItem]) -> str:
-        """Build prompt for generation with friendly emoji style and time awareness."""
+    def add_to_conversation_history(self, user_id: str, user_name: str, message: str, response: str):
+        """Thêm tin nhắn vào lịch sử trò chuyện, giữ tối đa 5 tin nhắn gần nhất."""
+        if user_id not in self.conversation_history:
+            self.conversation_history[user_id] = []
+        
+        # Thêm tin nhắn mới
+        conv_msg = ConversationMessage(
+            user_id=user_id,
+            user_name=user_name,
+            message=message,
+            response=response,
+            timestamp=get_vietnam_time()
+        )
+        
+        self.conversation_history[user_id].append(conv_msg)
+        
+        # Giữ chỉ 5 tin nhắn gần nhất
+        if len(self.conversation_history[user_id]) > self.max_history_per_user:
+            self.conversation_history[user_id] = self.conversation_history[user_id][-self.max_history_per_user:]
+        
+        log.info(f"💬 Lưu lịch sử cho {user_name}: {len(self.conversation_history[user_id])} tin nhắn")
+
+    def get_conversation_context(self, user_id: str) -> str:
+        """Lấy ngữ cảnh từ lịch sử trò chuyện của user."""
+        if user_id not in self.conversation_history or not self.conversation_history[user_id]:
+            return ""
+        
+        history = self.conversation_history[user_id]
+        context_parts = []
+        
+        for i, conv in enumerate(history, 1):
+            # Chỉ hiển thị thời gian cho tin nhắn cũ hơn 5 phút
+            time_diff = (get_vietnam_time() - conv.timestamp).total_seconds()
+            time_str = ""
+            if time_diff > 300:  # 5 phút
+                time_str = f" ({conv.timestamp.strftime('%H:%M')})"
+            
+            context_parts.append(f"   {i}. {conv.user_name}: {conv.message}{time_str}")
+            context_parts.append(f"      Bot: {conv.response[:100]}{'...' if len(conv.response) > 100 else ''}")
+        
+        return "\n".join(context_parts)
+
+    def build_prompt(self, user_id: str, user_name: str, user_msg: str, contexts: List[KBItem]) -> str:
+        """Build prompt for generation with friendly emoji style, time awareness and conversation history."""
         
         # Get current time context
         time_ctx = get_time_context()
         current_time = get_vietnam_time()
+        
+        # Get conversation history
+        conversation_context = self.get_conversation_context(user_id)
         
         prompt = f"""🏔️ Bạn là trợ lý du lịch AI thân thiện của Khu du lịch Núi Bà Đen, Tây Ninh.
 
@@ -451,6 +509,7 @@ class BaDenAIBot:
 - ⏰ SỬ DỤNG THÔNG TIN THỜI GIAN để tư vấn chính xác (bây giờ, hôm nay, chiều nay, cuối tuần)
 - 🎯 Giúp du khách có trải nghiệm tuyệt vời
 - 📞 Nếu thiếu thông tin, gợi ý gọi hotline {SYSTEM_HOTLINE}
+- 🔄 SỬ DỤNG LỊCH SỬ TRÒ CHUYỆN để hiểu ngữ cảnh và trả lời liền mạch, tự nhiên
 
 🎨 PHONG CÁCH TRẢ LỜI:
 - Sử dụng emoji phù hợp: 🎫 (vé), 🕐 (giờ), 🌤️ (thời tiết), 🏛️ (chùa), 🚠 (cáp treo), 🍽️ (ăn uống), 📍 (địa điểm), 💰 (giá), ⛰️ (núi), 🎒 (du lịch)
@@ -458,6 +517,16 @@ class BaDenAIBot:
 - Kết thúc bằng lời chúc tốt đẹp
 - Tạo cảm giác như đang nói chuyện với bạn bè
 - Khi khách hỏi "bây giờ", "hôm nay", "chiều nay" → dùng thông tin thời gian thực để trả lời
+- Tham khảo lịch sử để hiểu câu hỏi liên quan (ví dụ: "còn gì khác?", "thế còn giá vé?", "cảm ơn")"""
+
+        # Thêm lịch sử trò chuyện nếu có
+        if conversation_context:
+            prompt += f"""
+
+💭 LỊCH SỬ TRÒ CHUYỆN GẦN ĐÂY:
+{conversation_context}"""
+
+        prompt += """
 
 📚 DỮ LIỆU:
 """
@@ -485,17 +554,17 @@ class BaDenAIBot:
         
         prompt += f"""
 👤 KHÁCH HÀNG: {user_name or 'Bạn'}
-💬 CÂU HỎI: {user_msg}
+💬 CÂU HỎI HIỆN TẠI: {user_msg}
 
-🤖 TRẢ LỜI (thân thiện với emoji, TỐI ĐA 1200 ký tự, súc tích và đi thẳng vào vấn đề):"""
+🤖 TRẢ LỜI (thân thiện với emoji, TỐI ĐA 1200 ký tự, súc tích và đi thẳng vào vấn đề, tham khảo lịch sử để trả lời liền mạch):"""
         
         return prompt
 
-    async def generate(self, user_name: str, user_msg: str, contexts: List[KBItem]) -> str:
-        """Generate response."""
+    async def generate(self, user_id: str, user_name: str, user_msg: str, contexts: List[KBItem]) -> str:
+        """Generate response with conversation history context."""
         if self.gen_model and contexts:
             try:
-                prompt = self.build_prompt(user_name, user_msg, contexts)
+                prompt = self.build_prompt(user_id, user_name, user_msg, contexts)
                 response = self.gen_model.generate_content(prompt)
                 return response.text.strip()
             except Exception as e:
@@ -703,13 +772,16 @@ class BaDenAIBot:
             # Send typing indicator again if processing takes time
             await self.send_chat_action(chat_id, "typing")
             
-            # Generate response
-            answer = await self.generate(user_name, text, contexts)
+            # Generate response with conversation history
+            answer = await self.generate(user_id, user_name, text, contexts)
             
             # Send response
             success = await self.send_message(chat_id, answer)
             if success:
                 log.info(f"✅ Replied to {user_name}: {answer[:100]}...")
+                
+                # Lưu vào lịch sử trò chuyện sau khi gửi thành công
+                self.add_to_conversation_history(user_id, user_name, text, answer)
             else:
                 log.error(f"❌ Failed to send reply to {user_name}")
                 
@@ -802,7 +874,7 @@ async def test_bot():
         print(f"   Found: {len(contexts)} contexts")
         
         if contexts:
-            response = await bot.generate("Test User", query, contexts)
+            response = await bot.generate("test_user_id", "Test User", query, contexts)
             print(f"   Response: {response[:100]}...")
 
 # Main entry point

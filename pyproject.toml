@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "python-zalo-bot"
+version = "0.1.6"
+description = "A simple library for Zalo Bot API"
+readme = "README.md"
+requires-python = ">=3.8"
+license = { text = "MIT" }
+authors = [
+  { name="ZTP", email="your_email@example.com" }
+]
+dependencies = [
+  # Runtime dependencies only
+]
+
+[project.urls]
+"Homepage" = "https://github.com/yourusername/python-zalo-bot"
+"Issues" = "https://github.com/yourusername/python-zalo-bot/issues"

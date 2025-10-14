@@ -8,9 +8,11 @@ Trợ lý Du lịch AI thông minh cho Khu du lịch quốc gia Núi Bà Đen, T
 - 🗄️ **Dữ liệu thời gian thực**: Kết nối Supabase cho thông tin cập nhật
 - 🔍 **Tìm kiếm thông minh**: RAG (Retrieval-Augmented Generation) 
 - 💬 **Phản hồi tự nhiên**: Như nhân viên tư vấn du lịch thực tế
-- 📝 **Lịch sử trò chuyện**: Lưu 5 tin nhắn gần nhất để hiểu ngữ cảnh
+- 📝 **Lịch sử trò chuyện**: Lưu 5 tin nhắn gần nhất để hiểu ngữ cảnh (hết hạn sau 30 phút)
 - ⚡ **Hiệu suất cao**: Cache thông minh, phản hồi nhanh
 - 🎫 **Cập nhật giá vé**: Tự động đồng bộ từ Sunworld API
+- 📊 **Logging tối ưu**: Ít noise, dễ theo dõi, có thể cấu hình
+- 👋 **Xử lý lời chào thông minh**: Nhận diện và phản hồi thân thiện với gợi ý
 
 ## 🚀 Cài đặt
 
@@ -47,6 +49,8 @@ ZALO_BOT_TOKEN=your_token
 
 # Cấu hình khác
 HOTLINE=0276 3829 829
+
+# Logging (INFO=ít log, DEBUG=đầy đủ log)
 LOG_LEVEL=INFO
 ```
 
@@ -69,13 +73,20 @@ python demo_bot.py
 # Chọn 2 cho preset questions
 ```
 
-### 🆕 Demo lịch sử trò chuyện
+### 🆕 Demo tính năng mới
 ```bash
-python demo_conversation.py
-# Demo ngắn gọn về tính năng lịch sử
+# Demo lịch sử trò chuyện
+python test_conversation_timeout.py
 
-python test_conversation_history.py
-# Test chi tiết với 5 câu hỏi liên tiếp
+# Demo logging tối ưu
+python demo_optimized_logging.py
+
+# Test logging levels
+python test_logging.py
+
+# Demo xử lý lời chào
+python demo_real_conversation.py
+python test_greeting_responses.py
 ```
 
 ### Test chất lượng AI

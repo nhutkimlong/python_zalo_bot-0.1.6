@@ -36,7 +36,19 @@ except Exception:
 
 # Setup
 load_dotenv()
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s — %(message)s")
+
+# Cấu hình logging tối ưu
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
+logging.basicConfig(level=getattr(logging, LOG_LEVEL), format="%(asctime)s %(levelname)s — %(message)s")
+
+# Tắt HTTP request logs từ các thư viện bên ngoài
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+logging.getLogger("urllib3").setLevel(logging.WARNING)
+logging.getLogger("requests").setLevel(logging.WARNING)
+logging.getLogger("aiohttp").setLevel(logging.WARNING)
+
+# Logger chính cho BaDen AI
 log = logging.getLogger("BaDenAI")
 
 # Config
@@ -206,6 +218,7 @@ class BaDenAIBot:
         # Conversation history - lưu trữ 5 tin nhắn gần nhất cho mỗi user
         self.conversation_history: Dict[str, List[ConversationMessage]] = {}
         self.max_history_per_user = 5
+        self.conversation_timeout_minutes = 30  # Hết hạn sau 30 phút không hoạt động
 
     async def fetch_kb(self) -> List[KBItem]:
         """Fetch knowledge base from Supabase."""
@@ -327,7 +340,7 @@ class BaDenAIBot:
             
             self.kb_cache = items
             self.cache_time = now
-            log.info(f"KB fetched: {len(items)} items")
+            log.debug(f"📚 KB fetched: {len(items)} items")
         except Exception as e:
             log.error(f"Fetch KB error: {e}")
         
@@ -422,8 +435,58 @@ class BaDenAIBot:
         
         return False
 
+    def is_greeting_message(self, query: str) -> bool:
+        """Kiểm tra xem tin nhắn có phải là lời chào không."""
+        greeting_keywords = [
+            'chào', 'xin chào', 'hello', 'hi', 'hey', 'good morning', 'good afternoon', 
+            'good evening', 'chào bạn', 'chào em', 'chào anh', 'chào chị',
+            'xin chào bạn', 'xin chào em', 'xin chào anh', 'xin chào chị'
+        ]
+        
+        query_lower = query.lower().strip()
+        
+        # Kiểm tra tin nhắn ngắn chỉ chứa lời chào (tối đa 4 từ)
+        words = query_lower.split()
+        if len(words) <= 4:
+            for keyword in greeting_keywords:
+                if keyword in query_lower:
+                    # Đảm bảo không chứa từ khóa câu hỏi
+                    question_keywords = ['gì', 'sao', 'như thế nào', 'bao nhiêu', 'ở đâu', 'khi nào', 'tại sao']
+                    if not any(q_word in query_lower for q_word in question_keywords):
+                        return True
+        
+        return False
+
+    def get_greeting_response(self, user_name: str) -> str:
+        """Tạo phản hồi thân thiện cho lời chào và gợi ý câu hỏi."""
+        time_ctx = get_time_context()
+        
+        greeting_response = f"""Xin chào {user_name or 'bạn'}! 😊 Mình là trợ lý AI của Khu du lịch Núi Bà Đen, Tây Ninh.
+
+🌟 Hôm nay là {time_ctx['current_day']} ({time_ctx['current_date']}), mình có thể giúp bạn tìm hiểu về:
+
+🎫 **Giá vé và combo ưu đãi**
+🕐 **Giờ hoạt động các dịch vụ** 
+🚠 **Cáp treo và phương tiện di chuyển**
+🏛️ **Các điểm tham quan tâm linh**
+🍽️ **Nhà hàng và ẩm thực**
+📍 **Hướng dẫn tham quan**
+
+💬 Bạn có thể hỏi mình bất cứ điều gì về Núi Bà Đen nhé! Ví dụ:
+• "Giá vé cáp treo bao nhiêu?"
+• "Giờ hoạt động hôm nay?"
+• "Có gì hay để tham quan?"
+
+📞 Hoặc gọi hotline {SYSTEM_HOTLINE} để được hỗ trợ trực tiếp! 🙏"""
+        
+        return greeting_response
+
     async def retrieve(self, query: str, k: int = 5) -> List[KBItem]:
         """Retrieve relevant KB items."""
+        # Kiểm tra nếu là lời chào đơn giản
+        if self.is_greeting_message(query):
+            return []  # Không cần tìm kiếm KB cho lời chào
+        
         # Check and update prices if needed
         await self.check_and_update_prices(query)
         
@@ -442,8 +505,31 @@ class BaDenAIBot:
         scored.sort(key=lambda x: x[0], reverse=True)
         return [item for _, item in scored[:k]]
 
+    def clean_expired_conversations(self):
+        """Xóa lịch sử trò chuyện đã hết hạn (quá 30 phút không hoạt động)."""
+        current_time = get_vietnam_time()
+        expired_users = []
+        
+        for user_id, messages in self.conversation_history.items():
+            if messages:
+                # Lấy tin nhắn cuối cùng
+                last_message = messages[-1]
+                time_diff = (current_time - last_message.timestamp).total_seconds() / 60  # phút
+                
+                if time_diff > self.conversation_timeout_minutes:
+                    expired_users.append(user_id)
+        
+        # Xóa lịch sử hết hạn
+        for user_id in expired_users:
+            user_name = self.conversation_history[user_id][-1].user_name if self.conversation_history[user_id] else "Unknown"
+            del self.conversation_history[user_id]
+            log.debug(f"🗑️ Xóa lịch sử hết hạn cho {user_name} (quá {self.conversation_timeout_minutes} phút)")
+
     def add_to_conversation_history(self, user_id: str, user_name: str, message: str, response: str):
         """Thêm tin nhắn vào lịch sử trò chuyện, giữ tối đa 5 tin nhắn gần nhất."""
+        # Dọn dẹp lịch sử hết hạn trước khi thêm mới
+        self.clean_expired_conversations()
+        
         if user_id not in self.conversation_history:
             self.conversation_history[user_id] = []
         
@@ -462,19 +548,34 @@ class BaDenAIBot:
         if len(self.conversation_history[user_id]) > self.max_history_per_user:
             self.conversation_history[user_id] = self.conversation_history[user_id][-self.max_history_per_user:]
         
-        log.info(f"💬 Lưu lịch sử cho {user_name}: {len(self.conversation_history[user_id])} tin nhắn")
+        log.debug(f"💬 Lưu lịch sử cho {user_name}: {len(self.conversation_history[user_id])} tin nhắn")
 
     def get_conversation_context(self, user_id: str) -> str:
-        """Lấy ngữ cảnh từ lịch sử trò chuyện của user."""
+        """Lấy ngữ cảnh từ lịch sử trò chuyện của user (nếu chưa hết hạn)."""
+        # Dọn dẹp lịch sử hết hạn trước khi lấy ngữ cảnh
+        self.clean_expired_conversations()
+        
         if user_id not in self.conversation_history or not self.conversation_history[user_id]:
             return ""
         
         history = self.conversation_history[user_id]
+        current_time = get_vietnam_time()
+        
+        # Kiểm tra xem lịch sử có còn hợp lệ không (trong vòng 30 phút)
+        last_message = history[-1]
+        time_diff_minutes = (current_time - last_message.timestamp).total_seconds() / 60
+        
+        if time_diff_minutes > self.conversation_timeout_minutes:
+            # Lịch sử đã hết hạn, xóa và trả về rỗng
+            del self.conversation_history[user_id]
+            log.debug(f"🗑️ Lịch sử của {last_message.user_name} đã hết hạn ({time_diff_minutes:.1f} phút)")
+            return ""
+        
         context_parts = []
         
         for i, conv in enumerate(history, 1):
-            # Chỉ hiển thị thời gian cho tin nhắn cũ hơn 5 phút
-            time_diff = (get_vietnam_time() - conv.timestamp).total_seconds()
+            # Hiển thị thời gian cho tin nhắn cũ hơn 5 phút
+            time_diff = (current_time - conv.timestamp).total_seconds()
             time_str = ""
             if time_diff > 300:  # 5 phút
                 time_str = f" ({conv.timestamp.strftime('%H:%M')})"
@@ -509,7 +610,7 @@ class BaDenAIBot:
 - ⏰ SỬ DỤNG THÔNG TIN THỜI GIAN để tư vấn chính xác (bây giờ, hôm nay, chiều nay, cuối tuần)
 - 🎯 Giúp du khách có trải nghiệm tuyệt vời
 - 📞 Nếu thiếu thông tin, gợi ý gọi hotline {SYSTEM_HOTLINE}
-- 🔄 SỬ DỤNG LỊCH SỬ TRÒ CHUYỆN để hiểu ngữ cảnh và trả lời liền mạch, tự nhiên
+- 🔄 SỬ DỤNG LỊCH SỬ TRÒ CHUYỆN (trong 30 phút gần đây) để hiểu ngữ cảnh và trả lời liền mạch, tự nhiên
 
 🎨 PHONG CÁCH TRẢ LỜI:
 - Sử dụng emoji phù hợp: 🎫 (vé), 🕐 (giờ), 🌤️ (thời tiết), 🏛️ (chùa), 🚠 (cáp treo), 🍽️ (ăn uống), 📍 (địa điểm), 💰 (giá), ⛰️ (núi), 🎒 (du lịch)
@@ -562,6 +663,11 @@ class BaDenAIBot:
 
     async def generate(self, user_id: str, user_name: str, user_msg: str, contexts: List[KBItem]) -> str:
         """Generate response with conversation history context."""
+        
+        # Xử lý lời chào đơn giản
+        if self.is_greeting_message(user_msg):
+            return self.get_greeting_response(user_name)
+        
         if self.gen_model and contexts:
             try:
                 prompt = self.build_prompt(user_id, user_name, user_msg, contexts)
@@ -654,7 +760,7 @@ class BaDenAIBot:
             
             # Debug log only for successful responses with data
             if resp and resp.get("ok") and resp.get("result"):
-                log.info(f"📡 getUpdates response: {resp}")
+                log.debug(f"📡 getUpdates response: {resp}")
             
             if resp.get("ok"):
                 result = resp.get("result", {})
@@ -750,7 +856,7 @@ class BaDenAIBot:
                 user_name = msg.get("display_name", msg.get("from", {}).get("display_name", ""))
             
             # Debug log
-            log.info(f"📥 Raw message: {msg}")
+            log.debug(f"📥 Raw message: {msg}")
             
             # Dedup
             if msg_id in self._processed_ids:
@@ -761,7 +867,7 @@ class BaDenAIBot:
                 log.warning(f"Empty text from message: {msg}")
                 return
             
-            log.info(f"📨 Message from {user_name} ({user_id}) in chat {chat_id}: {text}")
+            log.info(f"📨 {user_name}: {text}")
             
             # Send typing indicator immediately
             await self.send_chat_action(chat_id, "typing")
@@ -778,7 +884,7 @@ class BaDenAIBot:
             # Send response
             success = await self.send_message(chat_id, answer)
             if success:
-                log.info(f"✅ Replied to {user_name}: {answer[:100]}...")
+                log.info(f"✅ Bot → {user_name}: {answer[:80]}...")
                 
                 # Lưu vào lịch sử trò chuyện sau khi gửi thành công
                 self.add_to_conversation_history(user_id, user_name, text, answer)
@@ -803,7 +909,6 @@ class BaDenAIBot:
             # Pre-fetch KB
             await self.fetch_kb()
             log.info(f"📚 Knowledge Base loaded: {len(self.kb_cache)} items")
-            
             log.info("🔄 Starting polling loop...")
             consecutive_errors = 0
             max_consecutive_errors = 5

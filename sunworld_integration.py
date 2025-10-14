@@ -117,7 +117,7 @@ class SunworldPriceUpdater:
             async with session.get(url, params=params, headers=headers) as response:
                 if response.status == 200:
                     data = await response.json()
-                    log.info(f"✅ Flexible dates: {len(data.get('data', []))} products")
+                    log.debug(f"✅ Flexible dates: {len(data.get('data', []))} products")
                     return data.get("data", [])
                 else:
                     return []
@@ -130,7 +130,7 @@ class SunworldPriceUpdater:
         all_products = []
         
         # Strategy 1: Fetch multiple pages
-        log.info("📄 Fetching all pages...")
+        log.debug("📄 Fetching all pages...")
         page = 1
         has_more_pages = True
         
@@ -140,18 +140,18 @@ class SunworldPriceUpdater:
                 has_more_pages = False
             else:
                 all_products.extend(products)
-                log.info(f"✅ Page {page}: {len(products)} products")
+                log.debug(f"✅ Page {page}: {len(products)} products")
                 page += 1
         
         # Strategy 2: Fetch with flexible dates
-        log.info("📅 Fetching flexible dates...")
+        log.debug("📅 Fetching flexible dates...")
         flexible_products = await self.fetch_flexible_dates()
         
         # Merge and remove duplicates
         merged = all_products + flexible_products
         unique = list({p["id"]: p for p in merged}.values())
         
-        log.info(f"📊 Total unique products: {len(unique)}")
+        log.debug(f"📊 Total unique products: {len(unique)}")
         return unique
     
     def process_products(self, products: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -510,18 +510,18 @@ class SunworldPriceUpdater:
         start_time = datetime.now()
         
         try:
-            log.info("🚀 Starting Sunworld price update...")
+            log.debug("🚀 Starting Sunworld price update...")
             
             # Fetch all products
             all_products = await self.fetch_all_products()
             
             # Process products
             processed = self.process_products(all_products)
-            log.info(f"✅ Processed {len(processed)} products")
+            log.debug(f"✅ Processed {len(processed)} products")
             
             # Generate markdown
             markdown = self.generate_markdown(processed)
-            log.info(f"✅ Generated {len(markdown)} chars markdown")
+            log.debug(f"✅ Generated {len(markdown)} chars markdown")
             
             # Update database
             success = await self.update_knowledge_base(markdown)

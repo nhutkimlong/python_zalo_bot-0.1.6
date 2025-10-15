@@ -1,217 +1,212 @@
 # 🏔️ BaDen Tourist AI Bot
 
-Trợ lý Du lịch AI thông minh cho Khu du lịch quốc gia Núi Bà Đen, Tây Ninh.
+Trợ lý AI thông minh cho du lịch Núi Bà Đen, Tây Ninh - tích hợp với Zalo Bot API và Sunworld API để cung cấp thông tin du lịch real-time.
 
-## ✨ Tính năng
+## ✨ Tính năng chính
 
-- 🤖 **AI thông minh**: Sử dụng Gemini 2.5 Flash cho phản hồi tự nhiên
-- 🗄️ **Dữ liệu thời gian thực**: Kết nối Supabase cho thông tin cập nhật
-- 🔍 **Tìm kiếm thông minh**: RAG (Retrieval-Augmented Generation) 
-- 💬 **Phản hồi tự nhiên**: Như nhân viên tư vấn du lịch thực tế
-- 📝 **Lịch sử trò chuyện**: Lưu 5 tin nhắn gần nhất để hiểu ngữ cảnh (hết hạn sau 30 phút)
-- ⚡ **Hiệu suất cao**: Cache thông minh, phản hồi nhanh
-- 🎫 **Cập nhật giá vé**: Tự động đồng bộ từ Sunworld API
-- 📊 **Logging tối ưu**: Ít noise, dễ theo dõi, có thể cấu hình
-- 👋 **Xử lý lời chào thông minh**: Nhận diện và phản hồi thân thiện với gợi ý
+- 🤖 **AI Chatbot thông minh** - Sử dụng Google Gemini AI để trả lời câu hỏi du lịch
+- 🎫 **Cập nhật giá vé real-time** - Tích hợp Sunworld API để lấy giá vé mới nhất
+- 🕐 **Thông tin giờ hoạt động** - Kiểm tra trạng thái hoạt động của các dịch vụ
+- 💬 **Lịch sử hội thoại** - Ghi nhớ ngữ cảnh cuộc trò chuyện
+- 📊 **Cơ sở dữ liệu kiến thức** - Lưu trữ thông tin POI và dịch vụ trong Supabase
+- 🔄 **Tự động cập nhật** - Scheduler tự động cập nhật giá vé theo lịch
+
+## 🛠️ Công nghệ sử dụng
+
+- **Python 3.8+** - Ngôn ngữ lập trình chính
+- **Zalo Bot API** - Platform chatbot
+- **Google Gemini AI** - Trí tuệ nhân tạo
+- **Supabase** - Cơ sở dữ liệu và backend
+- **Sunworld API** - Dữ liệu giá vé và dịch vụ
+- **aiohttp** - HTTP client bất đồng bộ
+- **python-dotenv** - Quản lý biến môi trường
 
 ## 🚀 Cài đặt
 
 ### 1. Clone repository
+
 ```bash
-git clone <repository-url>
+git clone https://github.com/yourusername/baden-tourist-ai.git
 cd baden-tourist-ai
 ```
 
 ### 2. Cài đặt dependencies
+
 ```bash
 pip install -r requirements.txt
 ```
 
 ### 3. Cấu hình môi trường
+
+Sao chép file `.env.example` thành `.env` và cập nhật các thông tin:
+
 ```bash
 cp .env.example .env
-# Chỉnh sửa file .env với thông tin của bạn
 ```
 
-### 4. Cấu hình .env
+Chỉnh sửa file `.env`:
+
 ```env
-# Supabase
+# Zalo Bot Configuration
+ZALO_BOT_TOKEN=your_zalo_bot_token
+BASE_URL=https://bot-api.zapps.me/bot[your_token]
+
+# Google Gemini AI
+GEMINI_API_KEY=your_gemini_api_key
+GEMINI_MODEL=gemini-2.5-flash
+
+# Supabase Database
 SUPABASE_URL=your_supabase_url
 SUPABASE_KEY=your_supabase_key
 
-# Gemini AI
-GEMINI_API_KEY=your_gemini_api_key
-GEMINI_MODEL=gemini-2.0-flash-exp
+# Sunworld API
+SUNWORLD_SUBSCRIPTION_KEY=your_sunworld_key
 
-# Transport (nếu có)
-BASE_URL=your_bot_endpoint
-ZALO_BOT_TOKEN=your_token
-
-# Cấu hình khác
-HOTLINE=0276 3829 829
-
-# Logging (INFO=ít log, DEBUG=đầy đủ log)
+# System Configuration
+HOTLINE=0276 3823.378
 LOG_LEVEL=INFO
 ```
 
-## 🧪 Test & Demo
+### 4. Thiết lập cơ sở dữ liệu
 
-### Test kết nối cơ bản
-```bash
-python simple_test.py
-```
+Tạo các bảng trong Supabase:
 
-### Test đầy đủ chức năng
-```bash
-python test_complete.py
-```
-
-### Demo tương tác
-```bash
-python demo_bot.py
-# Chọn 1 cho interactive mode
-# Chọn 2 cho preset questions
-```
-
-### 🆕 Demo tính năng mới
-```bash
-# Demo lịch sử trò chuyện
-python test_conversation_timeout.py
-
-# Demo logging tối ưu
-python demo_optimized_logging.py
-
-# Test logging levels
-python test_logging.py
-
-# Demo xử lý lời chào
-python demo_real_conversation.py
-python test_greeting_responses.py
-```
-
-### Test chất lượng AI
-```bash
-python test_gemini_quality.py
-```
-
-## 📊 Cấu trúc dữ liệu Supabase
-
-### Bảng `ai_knowledge_base`
 ```sql
+-- Bảng kiến thức AI
 CREATE TABLE ai_knowledge_base (
-  id SERIAL PRIMARY KEY,
-  topic TEXT NOT NULL,
-  content TEXT NOT NULL,
-  status TEXT DEFAULT 'active',
-  created_at TIMESTAMP DEFAULT NOW(),
-  updated_at TIMESTAMP DEFAULT NOW()
+    id SERIAL PRIMARY KEY,
+    topic VARCHAR(255) NOT NULL,
+    content TEXT NOT NULL,
+    status VARCHAR(50) DEFAULT 'active',
+    created_at TIMESTAMP DEFAULT NOW(),
+    updated_at TIMESTAMP DEFAULT NOW()
 );
-```
 
-### Bảng `poi` (Points of Interest)
-```sql
+-- Bảng điểm tham quan
 CREATE TABLE poi (
-  id SERIAL PRIMARY KEY,
-  name TEXT NOT NULL,
-  description TEXT,
-  category TEXT,
-  coords JSONB,
-  status TEXT DEFAULT 'active',
-  created_at TIMESTAMP DEFAULT NOW(),
-  updated_at TIMESTAMP DEFAULT NOW()
+    id SERIAL PRIMARY KEY,
+    name VARCHAR(255) NOT NULL,
+    description TEXT,
+    category VARCHAR(100),
+    zone VARCHAR(100),
+    created_at TIMESTAMP DEFAULT NOW(),
+    updated_at TIMESTAMP DEFAULT NOW()
 );
-```
 
-### Bảng `poi_operating_hours`
-```sql
+-- Bảng giờ hoạt động
 CREATE TABLE poi_operating_hours (
-  id SERIAL PRIMARY KEY,
-  poi_id INTEGER REFERENCES poi(id),
-  operating_hours JSONB,
-  note TEXT,
-  updated_at TIMESTAMP DEFAULT NOW()
+    id SERIAL PRIMARY KEY,
+    poi_id INTEGER REFERENCES poi(id),
+    operating_hours JSONB,
+    note TEXT,
+    created_at TIMESTAMP DEFAULT NOW(),
+    updated_at TIMESTAMP DEFAULT NOW()
 );
 ```
 
 ## 🎯 Sử dụng
 
-### Chạy bot
+### Chạy bot chính
+
 ```bash
-python baden_tourist_ai.py
+python run_bot.py
 ```
 
-### Tích hợp vào hệ thống
-```python
-from baden_tourist_ai import BaDenAIBot
+### Chạy scheduler cập nhật giá vé
 
-# Khởi tạo bot
-bot = BaDenAIBot()
-
-# Xử lý tin nhắn
-async def handle_message(user_name, message):
-    contexts = await bot.retrieve(message)
-    response = await bot.generate(user_name, message, contexts)
-    return response
+```bash
+python price_scheduler.py
 ```
 
-## 📈 Hiệu suất
+### Test tích hợp Sunworld
 
-- ⚡ **Retrieval**: ~0.001s
-- 🤖 **Generation**: ~0.08s  
-- 🗄️ **Cache**: 15 phút
-- 📚 **Knowledge Base**: 64+ items
-
-## 🔧 Cấu hình nâng cao
-
-### Tùy chỉnh prompt
-Chỉnh sửa method `build_prompt()` trong `baden_tourist_ai.py`
-
-### Thêm dữ liệu
-Thêm records vào các bảng Supabase:
-- `ai_knowledge_base`: Thông tin chính
-- `poi`: Điểm tham quan
-- `poi_operating_hours`: Giờ hoạt động
-
-### Tùy chỉnh retrieval
-Chỉnh sửa method `retrieve()` và `keyword_score()`
-
-## 🛠️ Troubleshooting
-
-### Lỗi Gemini model
+```bash
+python sunworld_integration.py
 ```
-404 models/gemini-1.5-flash is not found
+
+## 📁 Cấu trúc dự án
+
 ```
-**Giải pháp**: Bot sẽ tự động thử các model khác. Kiểm tra GEMINI_API_KEY.
-
-### Lỗi Supabase
+baden-tourist-ai/
+├── baden_tourist_ai.py      # Bot chính với logic AI
+├── run_bot.py              # Script khởi động bot
+├── sunworld_integration.py # Tích hợp API Sunworld
+├── price_scheduler.py      # Scheduler cập nhật giá vé
+├── zalo_bot/              # Package Zalo Bot API
+├── requirements.txt       # Dependencies Python
+├── .env.example          # Template cấu hình
+├── .gitignore           # Git ignore rules
+└── README.md           # Tài liệu dự án
 ```
-Supabase init error
-```
-**Giải pháp**: Kiểm tra SUPABASE_URL và SUPABASE_KEY trong .env
 
-### Không tìm thấy thông tin
-**Giải pháp**: Thêm dữ liệu vào bảng `ai_knowledge_base`
+## 🤖 Tính năng AI Bot
 
-## 📞 Hỗ trợ
+### Xử lý câu hỏi thông minh
+- Hiểu ngữ cảnh tiếng Việt tự nhiên
+- Trả lời về giá vé, giờ hoạt động, điểm tham quan
+- Gợi ý lịch trình du lịch phù hợp
 
-- **Hotline**: 0276 3829 829
-- **Email**: support@badentourist.com
-- **GitHub Issues**: [Tạo issue mới](link-to-issues)
+### Cập nhật thông tin real-time
+- Giá vé cáp treo và combo
+- Trạng thái hoạt động các dịch vụ
+- Khuyến mãi và ưu đãi mới nhất
 
-## 📄 License
+### Tương tác thân thiện
+- Chào hỏi theo thời gian thực
+- Ghi nhớ lịch sử hội thoại
+- Hỗ trợ đa dạng câu hỏi du lịch
 
-MIT License - xem file LICENSE để biết thêm chi tiết.
+## 🔧 API Endpoints
 
-## 🙏 Đóng góp
+### Sunworld Integration
+- **GET** `/api/spl/show/listing` - Lấy danh sách sản phẩm
+- **Params**: `page`, `channel`, `date`, `land`, `park`
+- **Headers**: `apim-sub-key` (Sunworld API key)
 
-Chúng tôi hoan nghênh mọi đóng góp! Vui lòng:
+### Zalo Bot Webhook
+- **POST** `/webhook` - Nhận tin nhắn từ Zalo
+- **Headers**: `X-ZEvent-Signature` (Webhook verification)
+
+## 📊 Monitoring & Logging
+
+Bot sử dụng Python logging với các level:
+- `INFO` - Thông tin hoạt động chính
+- `DEBUG` - Chi tiết debug (set `LOG_LEVEL=DEBUG`)
+- `WARNING` - Cảnh báo lỗi nhẹ
+- `ERROR` - Lỗi nghiêm trọng
+
+## 🔒 Bảo mật
+
+- Sử dụng biến môi trường cho API keys
+- Webhook signature verification
+- Rate limiting cho API calls
+- Sanitize user input
+
+## 🤝 Đóng góp
 
 1. Fork repository
-2. Tạo feature branch
-3. Commit changes
-4. Push to branch  
+2. Tạo feature branch (`git checkout -b feature/amazing-feature`)
+3. Commit changes (`git commit -m 'Add amazing feature'`)
+4. Push to branch (`git push origin feature/amazing-feature`)
 5. Tạo Pull Request
+
+## 📝 License
+
+Dự án được phân phối dưới giấy phép MIT. Xem file `LICENSE` để biết thêm chi tiết.
+
+## 📞 Liên hệ
+
+- **Hotline hỗ trợ**: 0276 3823.378
+- **Email**: admin@example.com
+- **Website**: [Núi Bà Đen Tourism](https://nuibaden.com)
+
+## 🙏 Acknowledgments
+
+- [Zalo Bot API](https://developers.zalo.me/docs/api/bot-api) - Platform chatbot
+- [Google Gemini](https://ai.google.dev/) - AI Language Model
+- [Supabase](https://supabase.com/) - Backend as a Service
+- [Sunworld](https://sunworld.vn/) - Tourism data provider
 
 ---
 
-**Được phát triển với ❤️ cho du lịch Việt Nam**
+**Made with ❤️ for Núi Bà Đen Tourism**

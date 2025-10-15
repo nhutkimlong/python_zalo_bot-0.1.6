@@ -66,6 +66,7 @@ class KBItem:
     content: str
     updated_at: Optional[str] = None
     table: str = "ai_knowledge_base"
+    priority_score: float = 0.0  # Điểm ưu tiên dựa trên độ mới và độ tin cậy
 
 # Time utilities
 def get_vietnam_time() -> datetime:
@@ -220,8 +221,67 @@ class BaDenAIBot:
         self.max_history_per_user = 5
         self.conversation_timeout_minutes = 30  # Hết hạn sau 30 phút không hoạt động
 
+    def calculate_data_priority(self, updated_at: Optional[str], table: str, topic: str) -> float:
+        """Tính điểm ưu tiên dựa trên độ mới của dữ liệu và độ tin cậy."""
+        priority = 0.0
+        
+        # Điểm cơ bản theo loại dữ liệu
+        base_scores = {
+            "ai_knowledge_base": 1.0,  # Dữ liệu cơ bản
+            "poi": 1.2,                # POI có độ tin cậy cao hơn
+            "poi_operating_hours": 1.5  # Giờ hoạt động rất quan trọng
+        }
+        priority += base_scores.get(table, 1.0)
+        
+        # Điểm ưu tiên cho dữ liệu quan trọng
+        if any(keyword in topic.lower() for keyword in ['giá vé', 'price', 'ticket', 'khuyến mãi']):
+            priority += 2.0  # Giá vé rất quan trọng
+        elif any(keyword in topic.lower() for keyword in ['giờ hoạt động', 'operating', 'hours']):
+            priority += 1.8  # Giờ hoạt động quan trọng
+        elif any(keyword in topic.lower() for keyword in ['cáp treo', 'cable', 'transport']):
+            priority += 1.5  # Phương tiện di chuyển quan trọng
+        
+        # Điểm thưởng cho dữ liệu mới
+        if updated_at:
+            try:
+                from datetime import datetime
+                # Parse ISO format: 2024-10-14T10:30:00+00:00
+                if 'T' in updated_at:
+                    update_time = datetime.fromisoformat(updated_at.replace('Z', '+00:00'))
+                else:
+                    # Fallback for other formats
+                    update_time = datetime.fromisoformat(updated_at)
+                
+                current_time = get_vietnam_time()
+                # Convert to same timezone for comparison
+                if update_time.tzinfo is None:
+                    update_time = update_time.replace(tzinfo=current_time.tzinfo)
+                
+                time_diff_hours = (current_time - update_time).total_seconds() / 3600
+                
+                # Điểm thưởng giảm dần theo thời gian
+                if time_diff_hours < 1:      # Dưới 1 giờ
+                    priority += 3.0
+                elif time_diff_hours < 24:   # Dưới 1 ngày
+                    priority += 2.0
+                elif time_diff_hours < 168:  # Dưới 1 tuần
+                    priority += 1.0
+                elif time_diff_hours < 720:  # Dưới 1 tháng
+                    priority += 0.5
+                # Dữ liệu cũ hơn 1 tháng không có điểm thưởng
+                
+            except Exception as e:
+                log.debug(f"Error parsing updated_at {updated_at}: {e}")
+                # Dữ liệu không có thời gian hợp lệ được coi là cũ
+                priority -= 0.5
+        else:
+            # Dữ liệu không có updated_at được coi là cũ
+            priority -= 1.0
+        
+        return max(priority, 0.1)  # Đảm bảo điểm tối thiểu
+
     async def fetch_kb(self) -> List[KBItem]:
-        """Fetch knowledge base from Supabase."""
+        """Fetch knowledge base from Supabase with priority scoring."""
         now = time.time()
         if self.kb_cache and (now - self.cache_time) < 900:  # 15 min cache
             return self.kb_cache
@@ -234,12 +294,17 @@ class BaDenAIBot:
             # Fetch ai_knowledge_base
             res = self.supabase.table("ai_knowledge_base").select("*").execute()
             for row in res.data or []:
+                topic = row.get("topic", "")
+                updated_at = row.get("updated_at")
+                priority = self.calculate_data_priority(updated_at, "ai_knowledge_base", topic)
+                
                 items.append(KBItem(
                     id=row.get("id"),
-                    topic=row.get("topic", ""),
+                    topic=topic,
                     content=row.get("content", ""),
-                    updated_at=row.get("updated_at"),
-                    table="ai_knowledge_base"
+                    updated_at=updated_at,
+                    table="ai_knowledge_base",
+                    priority_score=priority
                 ))
             
             # Fetch POI with enhanced content including category and zone
@@ -279,12 +344,16 @@ class BaDenAIBot:
                     
                     enhanced_content = ". ".join(content_parts)
                     
+                    updated_at = row.get("updated_at")
+                    priority = self.calculate_data_priority(updated_at, "poi", name)
+                    
                     items.append(KBItem(
                         id=row.get("id"),
                         topic=name,
                         content=enhanced_content,
-                        updated_at=row.get("updated_at"),
-                        table="poi"
+                        updated_at=updated_at,
+                        table="poi",
+                        priority_score=priority
                     ))
             except:
                 pass
@@ -327,12 +396,17 @@ class BaDenAIBot:
                     if note:
                         content_parts.append(f"Ghi chú: {note}")
                     
+                    updated_at = row.get("updated_at")
+                    topic = f"Giờ hoạt động {poi_name}"
+                    priority = self.calculate_data_priority(updated_at, "poi_operating_hours", topic)
+                    
                     items.append(KBItem(
                         id=row.get("id"),
-                        topic=f"Giờ hoạt động {poi_name}",
+                        topic=topic,
                         content="\n".join(content_parts),
-                        updated_at=row.get("updated_at"),
-                        table="poi_operating_hours"
+                        updated_at=updated_at,
+                        table="poi_operating_hours",
+                        priority_score=priority
                     ))
             except Exception as e:
                 log.warning(f"Could not fetch operating hours: {e}")
@@ -347,7 +421,7 @@ class BaDenAIBot:
         return self.kb_cache
 
     def keyword_score(self, query: str, text: str, item: KBItem = None) -> float:
-        """Enhanced keyword matching with category/zone boosting."""
+        """Enhanced keyword matching with category/zone boosting and data freshness."""
         query = query.lower()
         text = text.lower()
         score = 0.0
@@ -398,6 +472,10 @@ class BaDenAIBot:
             if any(keyword in query for keyword in ['cảnh', 'view', 'đỉnh', 'ngắm']):
                 if 'điểm ngắm cảnh' in text or 'viewpoint' in text:
                     score += 2.0
+        
+        # Apply data priority multiplier
+        if item and score > 0:
+            score *= item.priority_score
         
         return score
 
@@ -481,8 +559,49 @@ class BaDenAIBot:
         
         return greeting_response
 
+    def deduplicate_and_prioritize(self, items: List[KBItem]) -> List[KBItem]:
+        """Loại bỏ dữ liệu trùng lặp và ưu tiên dữ liệu mới nhất."""
+        # Nhóm các item theo chủ đề tương tự
+        topic_groups = {}
+        
+        for item in items:
+            # Tạo key để nhóm các chủ đề tương tự
+            topic_key = item.topic.lower()
+            
+            # Chuẩn hóa key cho các chủ đề tương tự
+            if 'giá vé' in topic_key or 'price' in topic_key or 'ticket' in topic_key:
+                topic_key = 'pricing'
+            elif 'giờ hoạt động' in topic_key or 'operating' in topic_key:
+                # Nhóm theo POI cụ thể để tránh trùng lặp
+                poi_name = item.topic.replace('Giờ hoạt động', '').strip()
+                topic_key = f"hours_{poi_name.lower().replace(' ', '_')}"
+            elif 'cáp treo' in topic_key or 'cable' in topic_key:
+                topic_key = 'cable_car'
+            
+            if topic_key not in topic_groups:
+                topic_groups[topic_key] = []
+            topic_groups[topic_key].append(item)
+        
+        # Chọn item tốt nhất từ mỗi nhóm
+        deduplicated = []
+        for group_items in topic_groups.values():
+            if len(group_items) == 1:
+                deduplicated.append(group_items[0])
+            else:
+                # Sắp xếp theo priority_score và chọn item tốt nhất
+                group_items.sort(key=lambda x: x.priority_score, reverse=True)
+                best_item = group_items[0]
+                
+                # Log thông tin về việc chọn dữ liệu mới nhất
+                if len(group_items) > 1:
+                    log.debug(f"📊 Chọn dữ liệu mới nhất: {best_item.topic} (priority: {best_item.priority_score:.2f}) thay vì {len(group_items)-1} item cũ hơn")
+                
+                deduplicated.append(best_item)
+        
+        return deduplicated
+
     async def retrieve(self, query: str, k: int = 5) -> List[KBItem]:
-        """Retrieve relevant KB items."""
+        """Retrieve relevant KB items with data freshness priority."""
         # Kiểm tra nếu là lời chào đơn giản
         if self.is_greeting_message(query):
             return []  # Không cần tìm kiếm KB cho lời chào
@@ -494,7 +613,10 @@ class BaDenAIBot:
         if not items:
             return []
         
-        # Score items by enhanced keyword matching
+        # Loại bỏ trùng lặp và ưu tiên dữ liệu mới nhất
+        items = self.deduplicate_and_prioritize(items)
+        
+        # Score items by enhanced keyword matching (đã bao gồm priority_score)
         scored = []
         for item in items:
             score = self.keyword_score(query, f"{item.topic} {item.content}", item)
@@ -503,7 +625,13 @@ class BaDenAIBot:
         
         # Sort by score and return top k
         scored.sort(key=lambda x: x[0], reverse=True)
-        return [item for _, item in scored[:k]]
+        result = [item for _, item in scored[:k]]
+        
+        # Log thông tin về dữ liệu được chọn
+        if result:
+            log.debug(f"🔍 Retrieved {len(result)} items for '{query}': {[f'{item.topic} (priority: {item.priority_score:.2f})' for item in result[:3]]}")
+        
+        return result
 
     def clean_expired_conversations(self):
         """Xóa lịch sử trò chuyện đã hết hạn (quá 30 phút không hoạt động)."""
@@ -553,7 +681,7 @@ class BaDenAIBot:
     def get_conversation_context(self, user_id: str) -> str:
         """Lấy ngữ cảnh từ lịch sử trò chuyện của user (nếu chưa hết hạn)."""
         # Dọn dẹp lịch sử hết hạn trước khi lấy ngữ cảnh
-        self.clean_expired_conversations()
+        self.clean_expired_convers ations()
         
         if user_id not in self.conversation_history or not self.conversation_history[user_id]:
             return ""

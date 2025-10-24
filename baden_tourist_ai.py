@@ -681,7 +681,7 @@ class BaDenAIBot:
     def get_conversation_context(self, user_id: str) -> str:
         """Lấy ngữ cảnh từ lịch sử trò chuyện của user (nếu chưa hết hạn)."""
         # Dọn dẹp lịch sử hết hạn trước khi lấy ngữ cảnh
-        self.clean_expired_convers ations()
+        self.clean_expired_conversations()
         
         if user_id not in self.conversation_history or not self.conversation_history[user_id]:
             return ""

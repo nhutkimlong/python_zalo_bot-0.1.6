@@ -11,6 +11,7 @@ import math
 import time
 import asyncio
 import logging
+import hashlib
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
@@ -67,6 +68,8 @@ class KBItem:
     updated_at: Optional[str] = None
     table: str = "ai_knowledge_base"
     priority_score: float = 0.0  # Điểm ưu tiên dựa trên độ mới và độ tin cậy
+    vector: Optional[List[float]] = None
+    image_url: Optional[str] = None
 
 # Time utilities
 def get_vietnam_time() -> datetime:
@@ -216,6 +219,13 @@ class BaDenAIBot:
         self._processed_ids = set()
         self.last_price_update = None
         
+        # Vector persistence
+        self.vector_cache_file = "vector_cache.json"
+        self.vector_cache: Dict[str, Dict[str, Any]] = {} # key -> {vector, fingerprint}
+        self.last_vector_refresh = 0
+        self._load_vector_cache()
+        
+
         # Conversation history - lưu trữ 5 tin nhắn gần nhất cho mỗi user
         self.conversation_history: Dict[str, List[ConversationMessage]] = {}
         self.max_history_per_user = 5
@@ -296,6 +306,7 @@ class BaDenAIBot:
             for row in res.data or []:
                 topic = row.get("topic", "")
                 updated_at = row.get("updated_at")
+                image_url = row.get("image_url") # Cột mới có thể có
                 priority = self.calculate_data_priority(updated_at, "ai_knowledge_base", topic)
                 
                 items.append(KBItem(
@@ -304,23 +315,29 @@ class BaDenAIBot:
                     content=row.get("content", ""),
                     updated_at=updated_at,
                     table="ai_knowledge_base",
-                    priority_score=priority
+                    priority_score=priority,
+                    image_url=image_url
                 ))
             
             # Fetch POI with enhanced content including category and zone
             try:
-                res = self.supabase.table("poi").select("*").execute()
+                res = self.supabase.table("poi").select("*, poi_operating_hours(*)").execute()
                 for row in res.data or []:
                     name = row.get("name", "Điểm tham quan")
                     description = row.get("description", "")
                     category = row.get("category", "")
                     zone = row.get("zone", "")
+                    address = row.get("address", "")
+                    image_url = row.get("image_url")
                     
                     # Enhanced content with category and zone info
                     content_parts = []
                     if description:
                         content_parts.append(description)
                     
+                    if address:
+                        content_parts.append(f"🏠 Địa chỉ: {address}")
+
                     # Add category and zone info for better retrieval
                     if category:
                         category_name = {
@@ -341,6 +358,14 @@ class BaDenAIBot:
                             'dinh_nui': 'Khu vực đỉnh núi'
                         }.get(zone, zone)
                         content_parts.append(f"Vị trí: {zone_name}")
+
+                    # Thêm thông tin giờ hoạt động nếu có
+                    hours_data = row.get("poi_operating_hours")
+                    if hours_data and isinstance(hours_data, list) and hours_data:
+                        # Assuming poi_operating_hours is a list of objects, take the first one
+                        first_hours_entry = hours_data[0]
+                        operating_hours_str = first_hours_entry.get("operating_hours", "Liên hệ hotline")
+                        content_parts.append(f"🕐 Giờ hoạt động: {operating_hours_str}")
                     
                     enhanced_content = ". ".join(content_parts)
                     
@@ -353,12 +378,14 @@ class BaDenAIBot:
                         content=enhanced_content,
                         updated_at=updated_at,
                         table="poi",
-                        priority_score=priority
+                        priority_score=priority,
+                        image_url=image_url
                     ))
-            except:
+            except Exception as e:
+                log.warning(f"Could not fetch POI: {e}")
                 pass
             
-            # Fetch Operating Hours
+            # Fetch Operating Hours (kept for backward compatibility or specific use cases)
             try:
                 res = self.supabase.table("poi_operating_hours").select("*").execute()
                 poi_res = self.supabase.table("poi").select("id, name").execute()
@@ -420,6 +447,118 @@ class BaDenAIBot:
         
         return self.kb_cache
 
+    def _load_vector_cache(self):
+        """Load vectors from local disk."""
+        if os.path.exists(self.vector_cache_file):
+            try:
+                with open(self.vector_cache_file, 'r', encoding='utf-8') as f:
+                    self.vector_cache = json.load(f)
+                log.info(f"💾 Loaded {len(self.vector_cache)} vectors from cache file")
+            except Exception as e:
+                log.warning(f"Could not load vector cache: {e}")
+                self.vector_cache = {}
+
+    def _save_vector_cache(self):
+        """Save vectors to local disk."""
+        try:
+            with open(self.vector_cache_file, 'w', encoding='utf-8') as f:
+                json.dump(self.vector_cache, f, ensure_ascii=False)
+            log.debug("💾 Vector cache saved to disk")
+        except Exception as e:
+            log.error(f"Could not save vector cache: {e}")
+
+    def get_content_fingerprint(self, text: str) -> str:
+        """Create a hash of content to detect changes."""
+        return hashlib.md5(text.encode('utf-8')).hexdigest()
+
+    async def get_embedding(self, text: str) -> Optional[List[float]]:
+        """Get embedding vector using Gemini."""
+        if not GEMINI_API_KEY or not _HAS_GEMINI:
+            return None
+            
+        try:
+            # Clean text for embedding
+            clean_text = text.replace("\n", " ")[:2000]
+            
+            # Using text-embedding-004 (best current Gemini embedding model)
+            # or fallback to embedding-001
+            result = genai.embed_content(
+                model="models/text-embedding-004",
+                content=clean_text,
+                task_type="retrieval_document"
+            )
+            return result['embedding']
+        except Exception as e:
+            log.warning(f"Embedding error (text-embedding-004): {e}")
+            try:
+                # Fallback to older model
+                result = genai.embed_content(
+                    model="models/embedding-001",
+                    content=clean_text,
+                    task_type="retrieval_document"
+                )
+                return result['embedding']
+            except:
+                return None
+
+    def cosine_similarity(self, v1: List[float], v2: List[float]) -> float:
+        """Calculate cosine similarity between two vectors."""
+        if not v1 or not v2 or len(v1) != len(v2):
+            return 0.0
+        
+        dot_product = sum(a * b for a, b in zip(v1, v2))
+        magnitude1 = math.sqrt(sum(a * a for a in v1))
+        magnitude2 = math.sqrt(sum(b * b for b in v2))
+        
+        if magnitude1 == 0 or magnitude2 == 0:
+            return 0.0
+            
+        return dot_product / (magnitude1 * magnitude2)
+
+    async def refresh_vectors(self, items: List[KBItem]):
+        """Generate/Update vectors only for items that changed."""
+        now = time.time()
+        
+        log.info("🔮 Synchronizing knowledge base vectors...")
+        count_new = 0
+        changed = False
+        
+        # Create a mapping for current items
+        for item in items:
+            # Create a unique key for lookup
+            key = f"{item.id}_{item.table}"
+            # Create a fingerprint of the current content
+            current_content = f"{item.topic}\n{item.content}"
+            fingerprint = self.get_content_fingerprint(current_content)
+            
+            # Check if we have this in cache and if it's still the same content
+            cached = self.vector_cache.get(key)
+            if cached and cached.get('fingerprint') == fingerprint:
+                item.vector = cached.get('vector')
+            else:
+                # Need to re-embed
+                log.info(f"🆕 {'Updating' if cached else 'Creating'} vector for: {item.topic[:30]}...")
+                vector = await self.get_embedding(current_content)
+                if vector:
+                    self.vector_cache[key] = {
+                        'vector': vector,
+                        'fingerprint': fingerprint,
+                        'updated_at': datetime.now().isoformat()
+                    }
+                    item.vector = vector
+                    count_new += 1
+                    changed = True
+                    # Small sleep to be nice to API
+                    await asyncio.sleep(0.5)
+        
+        if changed:
+            self._save_vector_cache()
+            log.info(f"✅ Vector sync complete. {count_new} items updated.")
+        else:
+            log.info("✅ All vectors are up-to-date. (Using persistent cache)")
+        
+        self.last_vector_refresh = now
+
     def keyword_score(self, query: str, text: str, item: KBItem = None) -> float:
         """Enhanced keyword matching with category/zone boosting and data freshness."""
         query = query.lower()
@@ -477,7 +616,32 @@ class BaDenAIBot:
         if item and score > 0:
             score *= item.priority_score
         
+        # Boost entries that look like direct answers or FAQs
+        if text.startswith("?") or "hỏi:" in text.lower() or "đáp:" in text.lower():
+            score += 2.0
+            
         return score
+
+    async def log_unanswered_question(self, user_id: str, query: str, score: float):
+        """Ghi lại các câu hỏi mà AI không tìm thấy câu trả lời tốt."""
+        if not self.supabase:
+            return
+        
+        try:
+            log.info(f"📝 Logging unanswered question: '{query}' (score: {score:.2f})")
+            data = {
+                "user_id": user_id,
+                "query": query,
+                "confidence_score": score,
+                "created_at": datetime.now().isoformat()
+            }
+            # Thử insert vào bảng unanswered_questions
+            self.supabase.table("unanswered_questions").insert(data).execute()
+        except Exception as e:
+            # Nếu bảng không tồn tại, ghi vào file local làm fallback
+            log.warning(f"Could not log to Supabase: {e}. Writing to local file instead.")
+            with open("unanswered_questions.log", "a", encoding="utf-8") as f:
+                f.write(f"{datetime.now().isoformat()} | {user_id} | {query} | {score:.2f}\n")
 
     async def check_and_update_prices(self, query: str) -> bool:
         """Check if price update is needed and perform it."""
@@ -540,43 +704,38 @@ class BaDenAIBot:
         time_ctx = get_time_context()
         
         greeting_response = f"""Xin chào {user_name or 'bạn'}! 😊 Mình là trợ lý AI của Khu du lịch Núi Bà Đen, Tây Ninh.
-
-🌟 Hôm nay là {time_ctx['current_day']} ({time_ctx['current_date']}), mình có thể giúp bạn tìm hiểu về:
-
-🎫 **Giá vé và combo ưu đãi**
+\n🌟 Hôm nay là {time_ctx['current_day']} ({time_ctx['current_date']}), mình có thể giúp bạn tìm hiểu về:
+\n🎫 **Giá vé và combo ưu đãi**
 🕐 **Giờ hoạt động các dịch vụ** 
 🚠 **Cáp treo và phương tiện di chuyển**
 🏛️ **Các điểm tham quan tâm linh**
 🍽️ **Nhà hàng và ẩm thực**
 📍 **Hướng dẫn tham quan**
-
-💬 Bạn có thể hỏi mình bất cứ điều gì về Núi Bà Đen nhé! Ví dụ:
+\n💬 Bạn có thể hỏi mình bất cứ điều gì về Núi Bà Đen nhé! Ví dụ:
 • "Giá vé cáp treo bao nhiêu?"
 • "Giờ hoạt động hôm nay?"
 • "Có gì hay để tham quan?"
-
-📞 Hoặc gọi hotline {SYSTEM_HOTLINE} để được hỗ trợ trực tiếp! 🙏"""
+\n📞 Hoặc gọi hotline {SYSTEM_HOTLINE} để được hỗ trợ trực tiếp! 🙏"""
         
         return greeting_response
 
     def deduplicate_and_prioritize(self, items: List[KBItem]) -> List[KBItem]:
-        """Loại bỏ dữ liệu trùng lặp và ưu tiên dữ liệu mới nhất."""
+        """Loại bỏ dữ liệu trùng lặp và ưu tiên dữ liệu mới nhất (dựa trên updated_at)."""
         # Nhóm các item theo chủ đề tương tự
         topic_groups = {}
         
         for item in items:
             # Tạo key để nhóm các chủ đề tương tự
-            topic_key = item.topic.lower()
+            topic_key = item.topic.lower().strip()
             
-            # Chuẩn hóa key cho các chủ đề tương tự
-            if 'giá vé' in topic_key or 'price' in topic_key or 'ticket' in topic_key:
-                topic_key = 'pricing'
+            # Chuẩn hóa key cho các chủ đề phổ biến
+            if any(k in topic_key for k in ['giá vé', 'bảng giá', 'price', 'ticket']):
+                topic_key = 'pricing_general'
             elif 'giờ hoạt động' in topic_key or 'operating' in topic_key:
-                # Nhóm theo POI cụ thể để tránh trùng lặp
-                poi_name = item.topic.replace('Giờ hoạt động', '').strip()
+                poi_name = item.topic.replace('Giờ hoạt động', '').replace('Lịch hoạt động', '').strip()
                 topic_key = f"hours_{poi_name.lower().replace(' ', '_')}"
             elif 'cáp treo' in topic_key or 'cable' in topic_key:
-                topic_key = 'cable_car'
+                topic_key = 'cable_car_general'
             
             if topic_key not in topic_groups:
                 topic_groups[topic_key] = []
@@ -588,20 +747,30 @@ class BaDenAIBot:
             if len(group_items) == 1:
                 deduplicated.append(group_items[0])
             else:
-                # Sắp xếp theo priority_score và chọn item tốt nhất
-                group_items.sort(key=lambda x: x.priority_score, reverse=True)
+                # Sắp xếp theo priority_score và updated_at (mới nhất lên đầu)
+                # Dùng updated_at làm tiêu chí phụ quan trọng
+                def sort_key(x):
+                    # Chuyển updated_at sang timestamp để so sánh
+                    ts = 0
+                    if x.updated_at:
+                        try:
+                            ts = datetime.fromisoformat(x.updated_at.replace('Z', '+00:00')).timestamp()
+                        except: pass
+                    return (x.priority_score, ts)
+                
+                group_items.sort(key=sort_key, reverse=True)
                 best_item = group_items[0]
                 
-                # Log thông tin về việc chọn dữ liệu mới nhất
+                # Log nếu tìm thấy bản cập nhật mới hơn
                 if len(group_items) > 1:
-                    log.debug(f"📊 Chọn dữ liệu mới nhất: {best_item.topic} (priority: {best_item.priority_score:.2f}) thay vì {len(group_items)-1} item cũ hơn")
+                    log.debug(f"✨ Ưu tiên dữ liệu mới nhất cho '{best_item.topic}' (ID: {best_item.id})")
                 
                 deduplicated.append(best_item)
         
         return deduplicated
 
-    async def retrieve(self, query: str, k: int = 5) -> List[KBItem]:
-        """Retrieve relevant KB items with data freshness priority."""
+    async def retrieve(self, query: str, k: int = 5, user_id: str = "unknown") -> List[KBItem]:
+        """Retrieve relevant KB items using hybrid search (Keywords + Vector)."""
         # Kiểm tra nếu là lời chào đơn giản
         if self.is_greeting_message(query):
             return []  # Không cần tìm kiếm KB cho lời chào
@@ -613,23 +782,49 @@ class BaDenAIBot:
         if not items:
             return []
         
-        # Loại bỏ trùng lặp và ưu tiên dữ liệu mới nhất
-        items = self.deduplicate_and_prioritize(items)
+        # 1. Sync vectors first
+        await self.refresh_vectors(items)
         
-        # Score items by enhanced keyword matching (đã bao gồm priority_score)
+        # 2. Get query embedding
+        query_vector = await self.get_embedding(query)
+        
+        # 3. Hybrid Scoring
         scored = []
+        max_v_score = 0
         for item in items:
-            score = self.keyword_score(query, f"{item.topic} {item.content}", item)
-            if score > 0:
-                scored.append((score, item))
+            # Keyword score (0 - 20+)
+            kw_score = self.keyword_score(query, f"{item.topic} {item.content}", item)
+            
+            # Vector score (0 - 1)
+            v_score = 0.0
+            if query_vector and item.vector:
+                v_score = self.cosine_similarity(query_vector, item.vector)
+                max_v_score = max(max_v_score, v_score)
+            
+            # Combine scores (Weighting)
+            # Vector score is boosted to match keyword magnitude
+            total_score = kw_score + (v_score * 15.0 if v_score > 0.6 else v_score * 5.0)
+            
+            if total_score > 0.5: # Ngưỡng tối thiểu để được coi là liên quan
+                scored.append((total_score, item))
         
-        # Sort by score and return top k
+        # Sort by total score and return top k
         scored.sort(key=lambda x: x[0], reverse=True)
+        
+        # Feedback loop: If the best match is poor, log it
+        if not scored or (scored and scored[0][0] < 5.0 and max_v_score < 0.6):
+            # Only log if it's not a very short query
+            if len(query.split()) >= 3:
+                asyncio.create_task(self.log_unanswered_question(user_id, query, scored[0][0] if scored else 0))
+
         result = [item for _, item in scored[:k]]
+        
+        # Loại bỏ trùng lặp và ưu tiên dữ liệu mới nhất
+        result = self.deduplicate_and_prioritize(result)
         
         # Log thông tin về dữ liệu được chọn
         if result:
-            log.debug(f"🔍 Retrieved {len(result)} items for '{query}': {[f'{item.topic} (priority: {item.priority_score:.2f})' for item in result[:3]]}")
+            log.debug(f"🔍 Hybrid Search: Found {len(result)} items for '{query}' (Best Score: {scored[0][0]:.2f})")
         
         return result
 
@@ -785,7 +980,14 @@ class BaDenAIBot:
 👤 KHÁCH HÀNG: {user_name or 'Bạn'}
 💬 CÂU HỎI HIỆN TẠI: {user_msg}
 
-🤖 TRẢ LỜI (thân thiện với emoji, TỐI ĐA 1200 ký tự, súc tích và đi thẳng vào vấn đề, tham khảo lịch sử để trả lời liền mạch):"""
+🤖 TRẢ LỜI CỦA BẠN:
+- Bắt đầu bằng một câu chào thân thiện nếu đây là câu hỏi đầu tiên.
+- Trình bày thông tin rõ ràng bằng các gạch đầu dòng nếu có nhiều ý.
+- CHỦ ĐỘNG đề xuất các dịch vụ liên quan: Nếu khách hỏi giá vé -> gợi ý combo Buffet hoặc WowPass. Nếu khách hỏi địa điểm -> gợi ý phương tiện cáp treo thuận tiện nhất.
+- Luôn giữ thái độ phục vụ chuyên nghiệp của KDL quốc tế.
+- TỐI ĐA 1000 ký tự. Tránh nói quá dài dòng.
+
+TRẢ LỜI:"""
         
         return prompt
 
@@ -916,19 +1118,51 @@ class BaDenAIBot:
             log.error(f"sendChatAction error: {e}")
             return False
 
-    async def send_message(self, chat_id: str, text: str) -> bool:
-        """Send message via Zalo Bot API."""
+    async def send_photo(self, chat_id: str, photo_url: str, caption: str = "") -> bool:
+        """Send photo via Zalo Bot API."""
+        try:
+            data = {
+                "chat_id": chat_id,
+                "photo": photo_url,
+                "caption": caption[:1000] # Giới hạn caption
+            }
+            resp = await self._http_post("sendPhoto", data)
+            return resp.get("ok", False)
+        except Exception as e:
+            log.error(f"sendPhoto error: {e}")
+            return False
+
+    async def send_message(self, chat_id: str, text: str, buttons: List[Dict[str, str]] = None) -> bool:
+        """Send message via Zalo Bot API with interactive buttons support."""
         try:
             # Check length and truncate if necessary
             if len(text) > 1900:
-                text = text[:1900] + "...\n\n📞 Để biết thêm chi tiết, bạn có thể gọi hotline 0276 3829 829 nhé!"
+                text = text[:1900] + "..."
             
             data = {"chat_id": chat_id, "text": text}
+            
+            # Thêm nút bấm nế có (Zalo Quick Reply / Buttons format)
+            if buttons:
+                # Format: [{"title": "Text", "payload": "query"}]
+                zalo_buttons = []
+                for btn in buttons:
+                    zalo_buttons.append({
+                        "title": btn.get("title", "Xem thêm"),
+                        "payload": btn.get("payload", btn.get("title", "")),
+                        "type": "oa.query.show" # Click để gửi tin nhắn thay người dùng
+                    })
+                data["buttons"] = zalo_buttons
+                
             resp = await self._http_post("sendMessage", data)
             if resp.get("ok"):
                 return True
             else:
-                log.warning(f"sendMessage failed: {resp}")
+                # Log error nhưng không làm gián đoạn
+                log.warning(f"sendMessage failed (with buttons={bool(buttons)}): {resp}")
+                # Fallback: Gửi tin nhắn text thuần nếu gửi buttons lỗi
+                if buttons:
+                    data.pop("buttons")
+                    await self._http_post("sendMessage", data)
                 return False
         except Exception as e:
             log.error(f"sendMessage error: {e}")
@@ -1000,17 +1234,48 @@ class BaDenAIBot:
             # Send typing indicator immediately
             await self.send_chat_action(chat_id, "typing")
             
-            # Retrieve relevant context
-            contexts = await self.retrieve(text, k=8)
+            # Retrieve context Hybrid
+            contexts = await self.retrieve(text, user_id=user_id)
             
-            # Send typing indicator again if processing takes time
-            await self.send_chat_action(chat_id, "typing")
-            
-            # Generate response with conversation history
+            # Generate response
             answer = await self.generate(user_id, user_name, text, contexts)
             
-            # Send response
-            success = await self.send_message(chat_id, answer)
+            # Kiểm tra xem có hình ảnh quan trọng trong context không (Lấy cái đầu tiên)
+            image_to_send = None
+            for ctx in contexts:
+                if ctx.image_url:
+                    image_to_send = ctx.image_url
+                    break
+            
+            # Gợi ý các nút bấm dựa trên ngữ cảnh (Quick Reply)
+            suggested_buttons = []
+            if "vé" in text.lower() or "giá" in text.lower():
+                suggested_buttons = [
+                    {"title": "🎫 Giá vé Cáp treo", "payload": "Giá vé cáp treo"},
+                    {"title": "🍽️ Buffet Vân Sơn", "payload": "Giá vé Buffet"},
+                    {"title": "🎟️ Combo WowPass", "payload": "WowPass là gì"}
+                ]
+            elif "điểm" in text.lower() or "chơi" in text.lower() or "tham quan" in text.lower():
+                suggested_buttons = [
+                    {"title": "🏛️ Chùa Bà", "payload": "Chùa Bà Đen"},
+                    {"title": "🏔️ Đỉnh Núi", "payload": "Đỉnh Núi Bà Đen có gì"},
+                    {"title": "🚠 Tuyến Cáp Treo", "payload": "Các tuyến cáp treo"}
+                ]
+            elif self.is_greeting_message(text):
+                suggested_buttons = [
+                    {"title": "🎫 Giá vé mới nhất", "payload": "Giá vé hôm nay"},
+                    {"title": "🕐 Giờ hoạt động", "payload": "Giờ mở cửa"},
+                    {"title": "⛰️ Cảnh đẹp đỉnh núi", "payload": "Đỉnh núi có gì hay"}
+                ]
+            
+            # Nếu có hình ảnh, gửi ảnh kèm caption ngắn trước, rồi gửi text dài sau
+            if image_to_send:
+                await self.send_photo(chat_id, image_to_send, f"📍 Hình ảnh về: {contexts[0].topic}")
+                # Đợi một chút để ảnh đi trước
+                await asyncio.sleep(0.5)
+
+            # Send main response (with buttons if any)
+            success = await self.send_message(chat_id, answer, buttons=suggested_buttons)
             if success:
                 log.info(f"✅ Bot → {user_name}: {answer[:80]}...")
                 
@@ -1024,19 +1289,48 @@ class BaDenAIBot:
             import traceback
             log.error(traceback.format_exc())
 
+    async def background_refresh_task(self):
+        """Task chạy ngầm để cập nhật dữ liệu hằng ngày/giờ."""
+        log.info("⏰ Background refresh task started.")
+        while True:
+            try:
+                # 1. Cập nhật giá vé (mỗi 6 tiếng)
+                current_query = "cập nhật giá vé định kỳ"
+                await self.check_and_update_prices(current_query)
+                
+                # 2. Refresh Knowledge Base & Vectors (mỗi 1 tiếng)
+                log.info("🔄 Scheduled KB & Vector sync...")
+                items = await self.fetch_kb()
+                await self.refresh_vectors(items)
+                
+                # 3. Dọn dẹp hội thoại hết hạn
+                self.clean_expired_conversations()
+                
+                # Chờ 1 tiếng cho lần quét tiếp theo
+                await asyncio.sleep(3600)
+                
+            except Exception as e:
+                log.error(f"Error in background task: {e}")
+                await asyncio.sleep(300) # Thử lại sau 5 phút nếu lỗi
+
     async def run(self):
         """Main bot loop."""
         log.info("🚀 BaDen Tourist AI Bot starting...")
         log.info(f"🔗 Polling: {BASE_URL}")
         
         # Initialize HTTP session
-        import aiohttp
-        self.session = aiohttp.ClientSession()
+        if not self.session:
+            self.session = aiohttp.ClientSession()
         
         try:
-            # Pre-fetch KB
-            await self.fetch_kb()
+            # Pre-fetch KB & Sync Vectors
+            items = await self.fetch_kb()
+            await self.refresh_vectors(items)
             log.info(f"📚 Knowledge Base loaded: {len(self.kb_cache)} items")
+            
+            # Start background task
+            asyncio.create_task(self.background_refresh_task())
+            
             log.info("🔄 Starting polling loop...")
             consecutive_errors = 0
             max_consecutive_errors = 5
